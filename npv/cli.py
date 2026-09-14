@@ -21,7 +21,7 @@ from .estimators import (
     chao1_bootstrap, discovery_curves, empirical_accumulation, estimate_N, estimate_P, estimate_V,
 )
 from .io import ConditionData, load_conditions
-from .plots import plot_discovery, plot_rank_probability
+from .plots import plot_density_landscape, plot_discovery, plot_rank_landscape, plot_rank_probability
 
 log = logging.getLogger("npv")
 
@@ -40,10 +40,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--condition-cols", default="",
                    help="comma-separated columns defining a condition, e.g. model,prompt (empty = single condition)")
     p.add_argument("--valuable-col", default=None,
-                   help="column with the 0/1 (or true/false) valuable label of each idea; enables the V block")
-    p.add_argument("--gold-col", default=None,
-                   help="optional column with HUMAN 0/1 labels on a subset of ideas (blank elsewhere); "
-                        "calibrates --valuable-col via PPV/NPV per label stratum")
+                   help="column with the FINAL 0/1 (or true/false) valuable label of each idea, after "
+                        "your own calibration; enables the V block")
+    p.add_argument("--coord-cols", default="",
+                   help="optional two comma-separated columns with 2-D semantic coordinates per idea "
+                        "(e.g. MDS/UMAP of the idea embedding); enables the density value-landscape figure")
     p.add_argument("--unseen-rule", choices=["singleton", "observed"], default="singleton",
                    help="valuable fraction assumed for unseen ideas: share among singletons (default) "
                         "or among all observed ideas; both are always reported with the bounds")
@@ -94,15 +95,14 @@ def analyse_condition(cd: ConditionData, args, top_k: list[int]) -> tuple[dict, 
         "q_detect": 1.0 - (1.0 - p_est.pi_hat) ** p_est.n,
     })
     if cd.valuable is not None:
-        v_est = estimate_V(cd.counts, cd.valuable, gold=cd.gold, unseen_rule=args.unseen_rule)
+        v_est = estimate_V(cd.counts, cd.valuable, unseen_rule=args.unseen_rule)
         for w in v_est.warnings:
             log.warning("[%s] %s", cd.label, w)
         idea_tbl["valuable"] = v_est.z.astype(int)
-        if cd.gold is not None:
-            idea_tbl["gold"] = cd.gold
-        idea_tbl["r_valuable"] = v_est.r                 # calibrated Pr(valuable); == valuable without gold
         idea_tbl["pi_within_valuable"] = v_est.pi_within_valuable
         row.update(v_est.to_dict())
+    if cd.coords is not None:
+        idea_tbl["x"], idea_tbl["y"] = cd.coords[:, 0], cd.coords[:, 1]
     idea_tbl = idea_tbl.sort_values("rank").reset_index(drop=True)
 
     if args.n_boot > 0:
@@ -126,6 +126,7 @@ def analyse_condition(cd: ConditionData, args, top_k: list[int]) -> tuple[dict, 
 def main(argv: list[str] | None = None) -> Path:
     args = build_parser().parse_args(argv)
     condition_cols = [c.strip() for c in args.condition_cols.split(",") if c.strip()]
+    coord_cols = [c.strip() for c in args.coord_cols.split(",") if c.strip()]
     top_k = [int(k) for k in args.top_k.split(",") if k.strip()]
 
     run_name = args.run_name or f"npv_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -134,17 +135,22 @@ def main(argv: list[str] | None = None) -> Path:
         raise SystemExit(f"run directory {run_dir} already exists; choose another --run-name (never overwrite)")
     run_dir.mkdir(parents=True)
     _setup_logging(run_dir)
-    resolved = {**vars(args), "condition_cols": condition_cols, "top_k": top_k,
+    resolved = {**vars(args), "condition_cols": condition_cols, "coord_cols": coord_cols, "top_k": top_k,
                 "toolkit_version": __version__, "started": datetime.now().isoformat()}
     (run_dir / "resolved_config.json").write_text(json.dumps(resolved, indent=2))
     log.info("run dir %s", run_dir)
 
     conditions = load_conditions(args.input, args.format, args.idea_col, condition_cols,
-                                 args.valuable_col, args.count_col, gold_col=args.gold_col)
-    rows, all_curves, all_rank, all_emp = [], {}, {}, {}
+                                 args.valuable_col, args.count_col, coord_cols=coord_cols)
+    rows, all_curves, all_rank, all_emp, landscape = [], {}, {}, {}, {}
     for cd in conditions:
         row, idea_tbl, curves, curve_tbl, emp = analyse_condition(cd, args, top_k)
         rows.append(row)
+        if cd.valuable is not None:
+            stats = {k: row[k] for k in ("S_obs", "S_V_obs", "N_hat", "N_V", "N_V_lower", "N_V_upper", "coverage", "Q_V")}
+            landscape[cd.label] = {"pi": idea_tbl["pi_hat"].to_numpy(), "valuable": idea_tbl["valuable"].to_numpy(),
+                                   "stats": stats,
+                                   "xy": idea_tbl[["x", "y"]].to_numpy() if cd.coords is not None else None}
         tag = _safe(cd.label)
         idea_tbl.to_csv(run_dir / f"idea_table_{tag}.csv", index=False)
         curve_tbl.to_csv(run_dir / f"discovery_curve_{tag}.csv", index=False)
@@ -159,17 +165,19 @@ def main(argv: list[str] | None = None) -> Path:
                  cd.label, row["n"], row["S_obs"], row["f1"], row["f2"], row["N_hat"], row["coverage"],
                  f"{row['pi0']:.4g}" if row["pi0"] == row["pi0"] else "nan")
         if "N_V" in row:
-            log.info("[%s] V: S_V_obs=%d N_obs_valuable=%.2f N_V=%.2f [%.2f, %.2f] (%s rule) Q_V=%.3f P_V=%.3f%s",
-                     cd.label, row["S_V_obs"], row["N_obs_valuable"], row["N_V"], row["N_V_lower"],
-                     row["N_V_upper"], row["unseen_rule"], row["Q_V"], row["P_V"],
-                     f" | gold n={row['calib_n_gold']} PPV={row['calib_PPV']:.2f} NPV={row['calib_NPV']:.2f}"
-                     if "calib_n_gold" in row else "")
+            log.info("[%s] V: S_V_obs=%d N_V=%.2f [%.2f, %.2f] (%s rule) Q_V=%.3f P_V=%.3f",
+                     cd.label, row["S_V_obs"], row["N_V"], row["N_V_lower"],
+                     row["N_V_upper"], row["unseen_rule"], row["Q_V"], row["P_V"])
 
     summary = pd.DataFrame(rows).sort_values("N_hat", ascending=True).reset_index(drop=True)
     summary.to_csv(run_dir / "summary.csv", index=False)
     (run_dir / "summary.json").write_text(json.dumps(rows, indent=2, default=float))
     plot_discovery(all_curves, run_dir / "fig_discovery_curve.png", empirical=all_emp or None)
     plot_rank_probability(all_rank, run_dir / "fig_rank_probability.png")
+    if landscape:
+        plot_rank_landscape(landscape, run_dir / "fig_value_landscape_rank.png")
+        if coord_cols:
+            plot_density_landscape(landscape, run_dir / "fig_value_landscape_2d.png")
     log.info("wrote %d condition(s); summary.csv sorted by N_hat ascending (worst first)", len(rows))
     return run_dir
 

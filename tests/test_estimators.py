@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from npv import (
-    as_valuable_labels, calibrate_labels, chao1_bias_corrected, chao1_bootstrap, detection_probability, discovery_curves,
+    as_valuable_labels, chao1_bias_corrected, chao1_bootstrap, detection_probability, discovery_curves,
     empirical_accumulation, estimate_N, estimate_P, estimate_V, expected_distinct,
     frequency_counts, rarefaction_curve, reconstructed_landscape, sample_coverage,
 )
@@ -74,8 +74,8 @@ def test_estimate_V_block_by_hand():
     v = estimate_V(COUNTS, z)
     C, n = 10 / 13, 13
     pi = C * COUNTS / n
-    assert list(v.z) == list(z) and list(v.r) == list(z)           # no gold -> r == z
-    assert v.S_V_obs == 4 and v.N_obs_valuable == 4.0
+    assert list(v.z) == list(z)
+    assert v.S_V_obs == 4
     assert v.raw_ratio == pytest.approx(4 / 6)
     assert v.f0_hat == pytest.approx(1.5)
     assert v.n_singleton_basis == 3
@@ -108,37 +108,10 @@ def test_estimate_V_observed_rule_and_no_singletons():
     assert v0.P_V == pytest.approx(v0.Q_V)
 
 
-def test_calibration_with_gold_subset_by_hand():
-    # z = [1,0,1,0,1,1]; human labels on ideas 0,1,2,4: gold = [1,0,0,nan,1,nan]
-    # stratum z=1 labelled: ideas 0,2,4 -> gold 1,0,1 -> PPV = 2/3
-    # stratum z=0 labelled: idea 1 -> gold 0 -> NPV = 1
-    # r = gold where labelled, else PPV for z=1 (idea 5), 1-NPV = 0 for z=0 (idea 3)
-    z = [1, 0, 1, 0, 1, 1]
-    gold = [1, 0, 0, np.nan, 1, np.nan]
-    r, calib = calibrate_labels(np.array(z, dtype=float), gold)
-    np.testing.assert_allclose(r, [1, 0, 0, 0, 1, 2 / 3])
-    assert calib["n_gold"] == 4 and calib["n_gold_z1"] == 3 and calib["n_gold_z0"] == 1
-    assert calib["PPV"] == pytest.approx(2 / 3) and calib["NPV"] == 1.0
-    assert calib["agreement"] == pytest.approx(3 / 4)
-    v = estimate_V(COUNTS, z, gold=gold)
-    assert v.N_obs_valuable == pytest.approx(2 + 2 / 3)
-    assert v.frac_unseen_singleton == pytest.approx((0 + 0 + 2 / 3) / 3)   # singletons: ideas 2,3,5
-    assert v.N_V == pytest.approx(2 + 2 / 3 + 1.5 * (2 / 9))                # 3.0
-    assert v.calibration["PPV"] == pytest.approx(2 / 3)
-
-
-def test_calibration_requires_both_strata_and_blank_handling():
-    z = np.array([1, 0, 1, 0, 1, 1], dtype=float)
-    with pytest.raises(ValueError, match="both label strata"):
-        calibrate_labels(z, [1, np.nan, 0, np.nan, 1, np.nan])          # no z=0 idea labelled
-    with pytest.raises(ValueError, match="no labelled"):
-        calibrate_labels(z, [np.nan] * 6)
-    r, calib = calibrate_labels(z, ["1", "", "0", "no", None, ""])      # strings and blanks accepted
-    assert calib["n_gold"] == 3                                          # "", None are unlabelled
-    assert calib["PPV"] == pytest.approx(0.5) and calib["NPV"] == 1.0
-    np.testing.assert_allclose(r, [1, 0, 0, 0, 0.5, 0.5])
-    r2, _ = calibrate_labels(z, np.array([1.0, np.nan, 0.0, 0.0, np.nan, np.nan], dtype=object))
-    np.testing.assert_allclose(r2, [1, 0, 0, 0, 0.5, 0.5])              # float objects accepted
+def test_valuable_labels_accept_float_objects():
+    np.testing.assert_array_equal(as_valuable_labels(np.array([1.0, 0.0, 1.0], dtype=object)), [1, 0, 1])
+    with pytest.raises(ValueError, match="must be 0/1"):
+        as_valuable_labels(np.array([1.0, 0.5], dtype=object))
 
 
 def test_valuable_label_coercion():

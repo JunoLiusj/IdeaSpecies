@@ -4,15 +4,23 @@ A small, dependency-light tool that computes every estimator written in the
 **Stage 2 Task for RAs** document ("The N-P-V framework" section) from an idea-level
 or sample-level table. It does *not* identify ideas, embed text, or call any model:
 you bring a table where each independent generation has already been assigned to
-one idea category (and, optionally, each idea carries a binary gold label saying
-whether it is valuable, obtained however your study defines value).
+one idea category (and, optionally, each idea carries a binary label saying whether
+it is valuable, obtained however your study defines value).
+
+**This toolkit is a reference implementation, not the analysis.** It fixes the
+formulas so that every RA computes N, P and V the same way; everything around them
+(the hypothesis, the conditions you compare, the idea-identification and value
+procedures, the robustness checks, and above all the figures) is yours to design. Fork
+it, add columns, change the plots, or reimplement the formulas in your own pipeline.
+The figures it writes are deliberately plain starting points: tailor them to the
+regularity you want the reader to see.
 
 ```
 N  richness             bias-corrected Chao1 lower bound, sample coverage, discovery curve
 P  probability landscape coverage-adjusted pi_i, unseen mass M0, f0, pi_0, modal idea,
                          top-k mass, rank-probability curve
-V  value landscape      valuable filter z_i (optionally calibrated on a human-labelled subset),
-                         N_V with bounds, valuable mass Q_V / P_V, pi within the valuable space
+V  value landscape      valuable filter z_i, N_V with bounds, valuable mass Q_V / P_V,
+                         pi within the valuable space
 ```
 
 ## 1. Install and run (uv)
@@ -25,16 +33,64 @@ uv run pytest -q                         # 14 hand-checked tests should pass
 # synthetic example with known truth (two conditions, 300 samples each)
 uv run python examples/make_example_data.py
 uv run npv-estimate --input examples/example_samples.csv --format samples \
-    --condition-cols condition --valuable-col valuable --gold-col gold \
+    --condition-cols condition --valuable-col valuable --coord-cols x,y \
     --out-root examples/results --run-name demo
 ```
 
 Each run writes a **new** folder `<out-root>/<run-name>/` and refuses to overwrite an
 existing one. Without `--run-name` the folder is `npv_<timestamp>`.
 
-## 2. Input formats
+## 2. Input requirements
 
-Both are CSV (or TSV by extension). Column names are configurable.
+One CSV (or TSV, by file extension) with a header row, UTF-8, one table per run. The
+table may hold several conditions; the tool splits it by the condition columns you name.
+Column names are free, you pass them on the command line.
+
+**What a row must be.** In `samples` format each row is **one complete, independently
+reset replication** of your sampling unit (one completion, one conversation, one
+generate-critique-revise trajectory, ...), exactly as the task description defines it.
+Do not put the turns of one conversation, or the retries of one call, in separate rows.
+Sampling budgets should be comparable across conditions (same `n`, or report `n`).
+
+**Idea ids.** Every row carries the id of the substantive idea category it was assigned
+to, from *your* idea identification step (LLM judge or embedding clustering, checked on
+a human-labelled subset). For comparisons across conditions the ids must come from one
+common idea definition built on the pooled, blinded outputs: the same string means the
+same idea in every condition. Ids are treated as opaque strings.
+
+**Minimal `samples` table** (`--format samples --idea-col idea_id --condition-cols model`):
+
+```csv
+sample_id,model,idea_id,valuable,x,y
+s0001,llama70b,I-017,1,0.42,-1.10
+s0002,llama70b,I-003,0,-0.85,0.20
+s0003,gemini25,I-017,1,0.42,-1.10
+```
+
+**Minimal `counts` table** (`--format counts --count-col count --condition-cols model`):
+
+```csv
+model,idea_id,count,valuable,x,y
+llama70b,I-017,12,1,0.42,-1.10
+llama70b,I-003,1,0,-0.85,0.20
+gemini25,I-017,4,1,0.42,-1.10
+```
+
+Only `idea_id` (plus `count` in counts format) is required; `valuable`, `x`, `y` and the
+condition columns are optional and switch on the corresponding analyses.
+
+**Checklist before running**
+
+- [ ] one row = one independent replication (samples) or one observed idea (counts)
+- [ ] no missing values in any column you name on the command line
+- [ ] `count` values are positive integers; ideas with count 0 are not listed
+- [ ] the same idea id never appears twice within a condition in counts format
+- [ ] `valuable` is 0/1 (or true/false, yes/no) and identical on every row of an idea
+- [ ] `x`, `y` are identical on every row of an idea and were computed on the pooled ideas of all conditions
+- [ ] condition columns identify the frozen condition (model, prompt, sampling setting, protocol); anything that varies within a condition must be part of the treatment
+
+Anything that violates the checklist stops the run with an explicit error rather than
+being silently repaired.
 
 **`--format samples`** — one row per independent generation (the recommended form;
 it also enables the empirical accumulation curve).
@@ -43,8 +99,8 @@ it also enables the empirical accumulation curve).
 |---|---|---|
 | `idea_id` (`--idea-col`) | yes | idea category the sample was assigned to |
 | condition columns (`--condition-cols model,prompt`) | no | one estimate per unique combination |
-| `valuable` (`--valuable-col`) | no | the idea's valuable label from your procedure: `1`/`0`, `true`/`false` or `yes`/`no`; must be identical for all samples of one idea (the run stops otherwise) |
-| `gold` (`--gold-col`) | no | HUMAN `1`/`0` label on a subset of ideas, blank elsewhere; calibrates `valuable` (section 3.1) |
+| `valuable` (`--valuable-col`) | no | the idea's FINAL valuable label from your procedure (section 3.1): `1`/`0`, `true`/`false` or `yes`/`no`; must be identical for all samples of one idea (the run stops otherwise) |
+| `x`, `y` (`--coord-cols x,y`) | no | 2-D semantic coordinates of the idea (e.g. MDS / UMAP / PCA of the idea embedding, computed by you on the pooled ideas of all conditions); identical within an idea; enables the density landscape figure |
 
 **`--format counts`** — one row per *observed* idea.
 
@@ -53,17 +109,15 @@ it also enables the empirical accumulation curve).
 | `idea_id` | yes | idea id (unique within a condition) |
 | `count` (`--count-col`) | yes | x_i, number of samples that produced the idea (>= 1) |
 | condition columns | no | as above |
-| `valuable` | no | idea-level label, `1`/`0` (or `true`/`false`, `yes`/`no`) |
-| `gold` | no | human label on a subset, blank elsewhere |
+| `valuable` | no | idea-level FINAL label, `1`/`0` (or `true`/`false`, `yes`/`no`) |
+| `x`, `y` | no | 2-D semantic coordinates of the idea |
 
 Do **not** include rows with count 0: unobserved ideas are exactly what N estimates.
 Missing values, non-integer counts, duplicate idea rows, or labels other than 0/1
 stop the run with an explicit error (no silent defaults).
 
-How the valuable label is produced is up to your design (blinded human rating with a
-preregistered threshold, an LLM judge, an existing evaluator, ...). Record that
-procedure; the tool consumes the resulting 0/1 label and, if you have one, a small
-human-labelled subset to correct it.
+The tool takes the valuable label as given. Producing it, checking it against human
+judgement, and correcting it are part of your study design (section 3.1).
 
 ## 3. What is computed (formulas)
 
@@ -81,16 +135,16 @@ With `x_i` the count of idea `i`, `n = sum x_i`, `S_obs` the number of observed 
 | top-k mass | `sum of the k largest pi_i` | `top1_mass`, `top3_mass`, ... (`--top-k`) |
 | detection probability | `q_i = 1 - (1 - pi_i)^n` | `q_detect` in idea table |
 | discovery curve | `E[K_m] = sum_i 1 - (1 - pi_i)^m` | `discovery_curve_*.csv`, `fig_discovery_curve.png` |
-| valuable indicator | `z_i` = your label (1 valuable, 0 not); `r_i` = calibrated `Pr(valuable)` (= `z_i` without gold) | `valuable`, `r_valuable` in idea table |
-| observed valuable ideas | `N_obs_V = sum_obs r_i` (and the hard count `S_V_obs = #{z_i = 1}`) | `N_obs_valuable`, `S_V_obs` |
-| observed valuable ratio | `raw_ratio = N_obs_V / S_obs` (no unseen assumption) | `raw_ratio` |
-| unseen valuable fraction | `frac_u = mean r_i over singletons` (rare ideas proxy the unseen) | `frac_unseen_singleton` (+ `frac_unseen_observed`) |
-| valuable breadth | `N_V = N_obs_V + f0_hat * frac_u` | `N_V` |
-| bounds | `N_V_lower = N_obs_V` (no unseen idea valuable); `N_V_upper = N_obs_V + f0_hat` (all unseen valuable) | `N_V_lower`, `N_V_upper` |
+| valuable indicator | `z_i` = your final label (1 valuable, 0 not) | `valuable` in idea table |
+| observed valuable ideas | `S_V_obs = #{z_i = 1}` | `S_V_obs` |
+| observed valuable ratio | `raw_ratio = S_V_obs / S_obs` (no unseen assumption) | `raw_ratio` |
+| unseen valuable fraction | `frac_u = mean z_i over singletons` (rare ideas proxy the unseen) | `frac_unseen_singleton` (+ `frac_unseen_observed`) |
+| valuable breadth | `N_V = S_V_obs + f0_hat * frac_u` | `N_V` |
+| bounds | `N_V_lower = S_V_obs` (no unseen idea valuable); `N_V_upper = S_V_obs + f0_hat` (all unseen valuable) | `N_V_lower`, `N_V_upper` |
 | valuable fraction of the space | `N_V / N_hat` (and the same for the bounds) | `valuable_fraction`, `_lower`, `_upper` |
-| observed valuable mass | `Q_V = sum_obs pi_i r_i` (pi from the full sample, never renormalised) | `Q_V` |
+| observed valuable mass | `Q_V = sum_obs pi_i z_i` (pi from the full sample, never renormalised) | `Q_V` |
 | total valuable mass | `P_V = Q_V + M0 * frac_u` | `P_V` |
-| pi within the valuable space | `pi_i r_i / P_V` for valuable ideas, NaN otherwise | `pi_within_valuable` in idea table |
+| pi within the valuable space | `pi_i / P_V` for valuable ideas, NaN otherwise | `pi_within_valuable` in idea table |
 
 **Value is a filter, not a re-estimation.** Capture probabilities `pi_i`, coverage `C`,
 `N_hat` and `f0_hat` are all computed once on the full, unfiltered sample; the value
@@ -102,27 +156,45 @@ Always report `N_V` together with its bounds and `raw_ratio`; the bounds are the
 assumption-free statement about unseen valuable ideas. `--unseen-rule observed` swaps the
 singleton fraction for the share among all observed ideas; both are always in the table.
 
-### 3.1 Correcting an automatic label with a small human-labelled subset
+### 3.1 The valuable label, its human check, and its correction are yours to design
 
-If `valuable` comes from an LLM judge or another automatic evaluator, label a small
-random subset of ideas by hand and pass it as `--gold-col`. Sample within each label
-stratum (some ideas the judge called 1, some it called 0); a stratified random sample is
-fine, a random sample of all ideas is fine, a hand-picked sample is not. The tool then:
+The tool does not calibrate labels. Whatever produces `valuable` (blinded human ratings
+with a preregistered threshold, an LLM judge, an existing evaluator), you are expected to:
 
-1. estimates the judge's precision in each stratum on the labelled ideas:
-   `PPV = Pr(human = 1 | z = 1)`, `NPV = Pr(human = 0 | z = 0)`;
-2. sets `r_i = gold_i` where a human looked, else `r_i = PPV` for `z_i = 1` and
-   `r_i = 1 - NPV` for `z_i = 0`;
-3. runs every V formula above with `r_i` in place of `z_i`.
+1. **Label a human gold subset.** Draw a random subset of *ideas* (not samples) before
+   looking at results, have blinded humans label it with the same rubric, and freeze it.
+   Sampling within each automatic-label stratum (some ideas the judge called 1, some 0)
+   is fine and usually more informative than a plain random draw; a hand-picked subset
+   is not acceptable.
+2. **Measure disagreement.** On the gold subset compute at least the agreement rate and
+   the judge's precision per stratum, e.g. `PPV = Pr(human = 1 | auto = 1)` and
+   `NPV = Pr(human = 0 | auto = 0)`, and inspect *systematic* disagreement (verbosity,
+   polish, conventionality, ideas resembling the judge's own style).
+3. **Decide and document a correction.** Options, from simplest to most involved:
+   replace the automatic label by the human label wherever a human looked; flip labels
+   in a stratum whose precision is unacceptable; recompute an observed valuable count as
+   `PPV * n_auto_1 + (1 - NPV) * n_auto_0` and a corrected singleton fraction the same
+   way; or fit a calibration model. Preregister the choice if you can, and state the size
+   of the gold subset with every corrected number - with few human labels the PPV / NPV
+   are themselves noisy.
+4. **Feed the corrected 0/1 label back** into `--valuable-col` and rerun. If your
+   correction yields corrected *counts* rather than per-idea labels, plug them into the
+   same formulas by hand using `summary.csv` (`f0_hat`, `S_obs`, `N_hat`, `M0`):
 
-`summary.csv` reports `calib_n_gold`, `calib_n_gold_z1`, `calib_n_gold_z0`, `calib_PPV`,
-`calib_NPV` and `calib_agreement`; both strata need at least one human label or the run
-stops. With few human labels the PPV/NPV are themselves noisy: say how many you used.
-Without `--gold-col`, `r_i = z_i` and the tool trusts your label as given.
+   ```
+   N_V       = S_V_obs_corrected + f0_hat * frac_u_corrected
+   N_V_lower = S_V_obs_corrected,   N_V_upper = S_V_obs_corrected + f0_hat
+   ```
+
+   and keep `pi_i` untouched: the correction changes which ideas count as valuable,
+   never their generation probability.
+
+Report the uncorrected and the corrected results side by side, together with the gold
+subset size and the disagreement statistics from step 2.
 
 Extras that are *not* in the task description but help reporting:
 
-* `valuable_sample_share` — `sum x_i r_i / n`, the fraction of generations that produced
+* `valuable_sample_share` — `sum x_i z_i / n`, the fraction of generations that produced
   a valuable idea (the "hit rate" a user experiences; compare with `Q_V`, which is
   coverage-adjusted).
 * `N_V_observed_rule` — `N_V` under the alternative unseen assumption, so the two rules
@@ -146,18 +218,51 @@ Extras that are *not* in the task description but help reporting:
 resolved_config.json            all arguments as actually used + toolkit version
 run.log                         same messages as the console, incl. warnings
 summary.csv / summary.json      one row per condition, sorted by N_hat ascending (worst first)
-idea_table_<condition>.csv      idea_id, count, pi_hat, rank, q_detect [, valuable, gold, r_valuable, pi_within_valuable]
+idea_table_<condition>.csv      idea_id, count, pi_hat, rank, q_detect [, valuable, pi_within_valuable]
 discovery_curve_<condition>.csv m, rarefaction (m <= n), model_EK (all m)
 empirical_accumulation_<c>.csv  (samples format only)
 fig_discovery_curve.png         all conditions overlaid; dot = S_obs at n, dash-dot = N_hat
 fig_rank_probability.png        rank vs pi_i (log y); dashed line = pi_0
+fig_value_landscape_rank.png    (with --valuable-col) before vs after the valuable filter, rank view
+fig_value_landscape_2d.png      (with --valuable-col and --coord-cols) before vs after, density view
 ```
+
+### 4.1 The value-landscape figures (before value enters vs after the valuable filter)
+
+Both figures follow the convention of the project's own landscape figures: **value is a
+filter**. Kept ideas keep their exact `pi_i`; dropped ideas are removed whole; nothing is
+renormalised, so a lower or smaller "after" surface means that probability mass really
+left the valuable space. Each panel prints `S_obs -> S_V_obs`, `N_hat -> N_V [lower, upper]`
+and `C -> Q_V` (the share of observed mass that is valuable).
+
+* **Rank view** (always available): every idea as a gray stem at its rank in the full
+  sample; valuable ideas are recolored at the same height; dropped ideas become hollow
+  markers. Shared y-axis across conditions.
+* **Density view** (needs `--coord-cols`): a Gaussian kernel density on the 2-D semantic
+  plane, weighted by `pi_i`. "Before" uses all ideas (integrates to `C`); "after" uses
+  valuable ideas only (integrates to `Q_V`). One grid for all conditions, one bandwidth per
+  condition (Scott's rule on the full sample, reused unchanged for "after"), one color
+  scale for every panel. The "before" contours are repeated as dashed lines under the
+  "after" surface so the eye can compare footprint and height directly.
+
+These are starting points. Two conditions side by side already show a pattern; to make
+a regularity convincing put *several* models or conditions in one figure, order them by
+the factor you manipulate, and let the figure carry the comparison (a 3-D surface, a
+ridge plot of `pi` by semantic region, a difference map "after minus before", a
+small-multiple grid...). The tables give you every number the figures use.
 
 `idea_table_<condition>.csv` is the "idea-level table containing counts, pi_i ... and
 value" deliverable; join your raw value ratings and semantic columns (cluster / region /
 embedding coordinates) onto it downstream by `idea_id`.
 
 ## 5. Reading the numbers (and what they cannot tell you)
+
+* **One model or one example is not a regularity.** A pattern that holds in a single
+  condition can be an accident of that model, prompt or task. Test every hypothesis on
+  several models (or several comparable conditions of the factor you manipulate) and on
+  at least two tasks; report where the direction holds and where it does not. The tool
+  runs any number of conditions in one call precisely so that the comparison table and
+  the overlaid figures are the default output, not an afterthought.
 
 * **N_hat is a lower bound.** Report it together with `S_obs`, `coverage`, and the
   discovery curve, never alone. When `f1 = 0` the estimate collapses to `S_obs`.
@@ -185,9 +290,8 @@ from npv import estimate_N, estimate_P, estimate_V, discovery_curves
 counts = np.array([5, 3, 1, 1, 2, 1])          # x_i for 6 observed ideas, n = 13
 estimate_N(counts).N_hat                         # 7.5
 estimate_P(counts).pi_hat                        # C * x_i / n with C = 10/13
-v = estimate_V(counts, valuable=[1, 0, 1, 0, 1, 1])      # labels, one per idea
+v = estimate_V(counts, valuable=[1, 0, 1, 0, 1, 1])      # final labels, one per idea
 v.N_V, v.N_V_lower, v.N_V_upper                          # 5.0, 4.0, 5.5
-estimate_V(counts, [1, 0, 1, 0, 1, 1], gold=[1, 0, 0, None, 1, None]).calibration   # PPV/NPV
 discovery_curves(counts, extrapolate_to=50)["model"]
 ```
 

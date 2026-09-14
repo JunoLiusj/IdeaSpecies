@@ -18,14 +18,14 @@ P  (probability landscape, Good-Turing coverage)
 Discovery curve
     E[K_n] = sum_i 1 - (1 - pi_i)^n
 V  (value landscape; valuable is a FILTER, it never changes pi_i)
-    z_i      = 1 if idea i is labelled valuable else 0   (label from the RA's procedure)
-    r_i      = z_i, or Pr(valuable | label) after calibration on a human-labelled subset
-    N_obs_V  = sum_obs r_i                          observed valuable ideas
+    z_i      = 1 if idea i is labelled valuable else 0   (final label from the RA's procedure,
+                                                          after whatever calibration they designed)
+    N_obs_V  = sum_obs z_i                          observed valuable ideas
     f0_hat   = N_hat - S_obs                        unseen ideas (Chao1 lower bound)
-    frac_u   = mean r_i over singletons             declared assumption for the unseen part
+    frac_u   = mean z_i over singletons             declared assumption for the unseen part
     N_V      = N_obs_V + f0_hat * frac_u            point estimate ("rare ideas proxy the unseen")
     bounds   = [N_obs_V, N_obs_V + f0_hat]          no unseen valuable / all unseen valuable
-    Q_V      = sum_obs pi_i r_i                     mass on observed valuable ideas (pi from full sample)
+    Q_V      = sum_obs pi_i z_i                     mass on observed valuable ideas (pi from full sample)
     P_V      = Q_V + M0 * frac_u                    incl. the unseen valuable mass
 """
 
@@ -192,33 +192,30 @@ def estimate_P(counts, top_k=(1, 3, 5, 10)) -> PEstimate:
 # --------------------------------------------------------------------------- #
 @dataclass
 class VEstimate:
-    z: np.ndarray                   # RA label z_i per observed idea (0/1)
-    r: np.ndarray                   # calibrated Pr(valuable) per observed idea (== z without gold)
-    pi_within_valuable: np.ndarray  # pi_i r_i / P_V for valuable ideas, nan otherwise
-    S_V_obs: int                    # #{z_i = 1}
-    N_obs_valuable: float           # sum r_i
-    raw_ratio: float                # N_obs_valuable / S_obs   (Tier 1, no unseen assumption)
+    z: np.ndarray                   # final valuable label z_i per observed idea (0/1)
+    pi_within_valuable: np.ndarray  # pi_i / P_V for valuable ideas, nan otherwise
+    S_V_obs: int                    # #{z_i = 1} = N_obs_valuable
+    raw_ratio: float                # S_V_obs / S_obs   (Tier 1, no unseen assumption)
     f0_hat: float
-    frac_unseen_singleton: float    # mean r_i over singletons (nan when f1 = 0)
+    frac_unseen_singleton: float    # mean z_i over singletons (nan when f1 = 0)
     n_singleton_basis: int
-    frac_unseen_observed: float     # mean r_i over all observed ideas
-    N_V: float                      # N_obs_valuable + f0_hat * frac_unseen  (rule chosen by caller)
+    frac_unseen_observed: float     # mean z_i over all observed ideas
+    N_V: float                      # S_V_obs + f0_hat * frac_unseen  (rule chosen by caller)
     N_V_observed_rule: float        # same with frac_unseen_observed
-    N_V_lower: float                # N_obs_valuable            (no unseen idea is valuable)
-    N_V_upper: float                # N_obs_valuable + f0_hat   (every unseen idea is valuable)
+    N_V_lower: float                # S_V_obs            (no unseen idea is valuable)
+    N_V_upper: float                # S_V_obs + f0_hat   (every unseen idea is valuable)
     valuable_fraction: float        # N_V / N_hat
     valuable_fraction_lower: float  # N_V_lower / N_hat
     valuable_fraction_upper: float  # N_V_upper / N_hat
-    Q_V: float                      # sum pi_i r_i   (observed valuable mass, pi from full sample)
+    Q_V: float                      # sum pi_i z_i   (observed valuable mass, pi from full sample)
     P_V: float                      # Q_V + M0 * frac_unseen
-    valuable_sample_share: float    # sum x_i r_i / n
+    valuable_sample_share: float    # sum x_i z_i / n
     unseen_rule: str
-    calibration: dict | None        # PPV / NPV etc. when a gold subset was given
     warnings: list[str]
 
     def to_dict(self) -> dict:
-        d = {
-            "S_V_obs": self.S_V_obs, "N_obs_valuable": self.N_obs_valuable, "raw_ratio": self.raw_ratio,
+        return {
+            "S_V_obs": self.S_V_obs, "raw_ratio": self.raw_ratio,
             "frac_unseen_singleton": self.frac_unseen_singleton, "n_singleton_basis": self.n_singleton_basis,
             "frac_unseen_observed": self.frac_unseen_observed, "unseen_rule": self.unseen_rule,
             "N_V": self.N_V, "N_V_lower": self.N_V_lower, "N_V_upper": self.N_V_upper,
@@ -228,52 +225,11 @@ class VEstimate:
             "valuable_fraction_upper": self.valuable_fraction_upper,
             "Q_V": self.Q_V, "P_V": self.P_V, "valuable_sample_share": self.valuable_sample_share,
         }
-        if self.calibration:
-            d.update({f"calib_{k}": v for k, v in self.calibration.items()})
-        return d
 
 
-def calibrate_labels(z: np.ndarray, gold) -> tuple[np.ndarray, dict]:
-    """Turn RA labels z_i into Pr(valuable) r_i using a human-labelled subset.
-
-    ``gold`` has one entry per observed idea: 0/1 where a human labelled the idea,
-    NaN / blank elsewhere.  Within each label stratum the human hit-rate is
-    estimated (PPV among z = 1, NPV among z = 0), so the subset may be a random
-    sample within strata (it does not need to be a random sample of all ideas).
-      r_i = gold_i                     if the idea was human-labelled
-      r_i = PPV                        if z_i = 1 and not human-labelled
-      r_i = 1 - NPV                    if z_i = 0 and not human-labelled
-    Both strata need at least one human label; otherwise the run stops."""
-    g = np.asarray(gold, dtype=object)
-    if g.shape != z.shape:
-        raise ValueError(f"gold shape {g.shape} must match label shape {z.shape}")
-    labelled = np.array([not (x is None or (isinstance(x, float) and np.isnan(x)) or str(x).strip() == "")
-                         for x in g])
-    if labelled.sum() == 0:
-        raise ValueError("gold column has no labelled ideas")
-    gz = np.full(z.size, np.nan)
-    gz[labelled] = as_valuable_labels(g[labelled])
-    pos, neg = (z == 1) & labelled, (z == 0) & labelled
-    if pos.sum() == 0 or neg.sum() == 0:
-        raise ValueError(
-            f"gold subset must contain both label strata: {int(pos.sum())} human labels among "
-            f"z=1 ideas, {int(neg.sum())} among z=0 ideas. Label a few ideas in each stratum."
-        )
-    ppv = float(gz[pos].mean())          # Pr(human valuable | z = 1)
-    npv = float(1.0 - gz[neg].mean())    # Pr(human not valuable | z = 0)
-    r = np.where(z == 1, ppv, 1.0 - npv)
-    r[labelled] = gz[labelled]
-    calib = {
-        "n_gold": int(labelled.sum()), "n_gold_z1": int(pos.sum()), "n_gold_z0": int(neg.sum()),
-        "PPV": ppv, "NPV": npv,
-        "agreement": float((gz[labelled] == z[labelled]).mean()),
-    }
-    return r.astype(float), calib
-
-
-def estimate_V(counts, valuable, gold=None, unseen_rule: str = "singleton") -> VEstimate:
-    """V block.  ``valuable`` is the RA's 0/1 label per observed idea; ``gold`` an
-    optional partial human label vector (NaN where unlabelled) used to calibrate it.
+def estimate_V(counts, valuable, unseen_rule: str = "singleton") -> VEstimate:
+    """V block.  ``valuable`` is the RA's FINAL 0/1 label per observed idea (any
+    calibration against human labels happens upstream, in the RA's own pipeline).
     Value never touches pi_i: it is a filter over ideas whose probabilities come
     from the full sample."""
     c = _as_counts(counts)
@@ -283,10 +239,7 @@ def estimate_V(counts, valuable, gold=None, unseen_rule: str = "singleton") -> V
     if unseen_rule not in {"singleton", "observed"}:
         raise ValueError("unseen_rule must be 'singleton' or 'observed'")
     warnings: list[str] = []
-    calib = None
-    r = z.copy()
-    if gold is not None:
-        r, calib = calibrate_labels(z, gold)
+    r = z
 
     n_est = estimate_N(c)
     p = estimate_P(c)
@@ -309,14 +262,14 @@ def estimate_V(counts, valuable, gold=None, unseen_rule: str = "singleton") -> V
     p_v = q_v + (n_est.M0 * frac_used if f0 > 0 else 0.0)
     within = np.where(r > 0, p.pi_hat * r / p_v, np.nan) if p_v > 0 else np.full(c.size, np.nan)
     return VEstimate(
-        z=z, r=r, pi_within_valuable=within, S_V_obs=int(z.sum()), N_obs_valuable=n_obs_v,
+        z=z, pi_within_valuable=within, S_V_obs=int(z.sum()),
         raw_ratio=n_obs_v / n_est.S_obs, f0_hat=f0,
         frac_unseen_singleton=frac_single, n_singleton_basis=n_single, frac_unseen_observed=frac_obs,
         N_V=n_v, N_V_observed_rule=n_v_obs_rule, N_V_lower=n_obs_v, N_V_upper=n_obs_v + f0,
         valuable_fraction=n_v / n_est.N_hat, valuable_fraction_lower=n_obs_v / n_est.N_hat,
         valuable_fraction_upper=(n_obs_v + f0) / n_est.N_hat,
         Q_V=q_v, P_V=p_v, valuable_sample_share=float((c * r).sum() / c.sum()),
-        unseen_rule=unseen_rule, calibration=calib, warnings=warnings,
+        unseen_rule=unseen_rule, warnings=warnings,
     )
 
 

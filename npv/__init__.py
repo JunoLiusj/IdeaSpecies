@@ -13,7 +13,6 @@ from .estimators import (  # noqa: F401
     PEstimate,
     VEstimate,
     as_valuable_labels,
-    calibrate_labels,
     chao1_bias_corrected,
     chao1_bootstrap,
     detection_probability,

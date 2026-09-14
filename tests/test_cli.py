@@ -16,13 +16,14 @@ EXPECTED_FILES = [
     "idea_table_broad_flat.csv", "idea_table_narrow_peaked.csv",
     "discovery_curve_broad_flat.csv", "discovery_curve_narrow_peaked.csv",
     "fig_discovery_curve.png", "fig_rank_probability.png",
+    "fig_value_landscape_rank.png", "fig_value_landscape_2d.png",
 ]
 
 
 @pytest.fixture(scope="module")
 def runs(tmp_path_factory):
     out = tmp_path_factory.mktemp("npv")
-    common = ["--condition-cols", "condition", "--valuable-col", "valuable", "--gold-col", "gold",
+    common = ["--condition-cols", "condition", "--valuable-col", "valuable", "--coord-cols", "x,y",
               "--n-boot", "20", "--n-perm", "5", "--out-root", str(out)]
     s = main(["--input", str(EXAMPLES / "example_samples.csv"), "--format", "samples",
               "--run-name", "s", *common])
@@ -45,14 +46,14 @@ def test_formats_agree_and_match_truth(runs):
     a = pd.read_csv(s / "summary.csv").set_index("condition").sort_index()
     b = pd.read_csv(c / "summary.csv").set_index("condition").sort_index()
     cols = ["n", "S_obs", "f1", "f2", "N_hat", "coverage", "pi0", "top1_mass",
-            "N_obs_valuable", "N_V", "N_V_lower", "N_V_upper", "Q_V", "P_V", "calib_PPV", "calib_NPV"]
+            "S_V_obs", "N_V", "N_V_lower", "N_V_upper", "Q_V", "P_V"]
     pd.testing.assert_frame_equal(a[cols], b[cols])
     truth = json.loads((EXAMPLES / "example_truth.json").read_text())
     for cond in ["broad_flat", "narrow_peaked"]:
         assert a.loc[cond, "n"] == truth["n_per_condition"]
         assert abs(a.loc[cond, "N_hat"] - truth[cond]["true_N"]) <= 3          # Chao1 close to the truth here
         assert a.loc[cond, "N_V_lower"] <= a.loc[cond, "N_V"] <= a.loc[cond, "N_V_upper"]
-        assert abs(a.loc[cond, "N_V"] - truth[cond]["true_valuable_N"]) <= 5   # calibrated, noisy auto label
+        assert abs(a.loc[cond, "N_V"] - truth[cond]["true_valuable_N"]) <= 3
     assert list(a.sort_values("N_hat").index) == list(pd.read_csv(s / "summary.csv")["condition"])  # worst first
 
 
@@ -66,12 +67,21 @@ def test_idea_table_consistency(runs):
     assert list(tbl["rank"]) == list(range(1, len(tbl) + 1))
     np.testing.assert_allclose(tbl["q_detect"], 1 - (1 - tbl["pi_hat"]) ** summ["n"])
     assert tbl["valuable"].sum() == summ["S_V_obs"]
-    assert tbl["r_valuable"].sum() == pytest.approx(summ["N_obs_valuable"])
-    labelled = tbl["gold"].notna()
-    assert labelled.sum() == summ["calib_n_gold"]
-    np.testing.assert_allclose(tbl.loc[labelled, "r_valuable"], tbl.loc[labelled, "gold"])   # human wins
-    assert (tbl["pi_hat"] * tbl["r_valuable"]).sum() == pytest.approx(summ["Q_V"])
+    assert (tbl["pi_hat"] * tbl["valuable"]).sum() == pytest.approx(summ["Q_V"])
+    assert {"x", "y"} <= set(tbl.columns) and tbl[["x", "y"]].notna().all().all()
     assert np.nansum(tbl["pi_within_valuable"]) == pytest.approx(summ["Q_V"] / summ["P_V"])
+
+
+def test_weighted_kde_integrates_to_weight_sum():
+    from npv.plots import scott_bandwidth, weighted_kde_grid
+    rng = np.random.default_rng(0)
+    xy = rng.normal(size=(30, 2))
+    w = rng.random(30)
+    gx = np.linspace(-8, 8, 400)
+    gy = np.linspace(-8, 8, 400)
+    dens = weighted_kde_grid(xy, w, gx, gy, scott_bandwidth(xy, w))
+    cell = (gx[1] - gx[0]) * (gy[1] - gy[0])
+    assert dens.sum() * cell == pytest.approx(w.sum(), rel=1e-3)     # surface height carries absolute mass
 
 
 def test_refuses_to_overwrite(runs):
