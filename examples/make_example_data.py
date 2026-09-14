@@ -4,8 +4,9 @@ estimators recover.  Two conditions:
   broad_flat   : N = 80 ideas, near-uniform probabilities  -> discovery keeps going
   narrow_peaked: N = 40 ideas, Zipf-like concentration      -> fast saturation, fat tail
 
-Each condition gets n = 300 independent samples.  Idea values are drawn once
-per idea (1-5 scale) so they are constant within an idea.  Writes:
+Each condition gets n = 300 independent samples.  A latent 1-5 quality score is
+drawn once per idea and turned into a binary gold label valuable = 1[score >= 4],
+standing in for whatever labelling procedure the RA uses.  Writes:
 
   examples/example_samples.csv   one row per sample (samples format)
   examples/example_counts.csv    one row per observed idea (counts format)
@@ -32,18 +33,19 @@ def make_condition(rng, name, n_ideas, zipf_s):
     pi = ranks ** (-zipf_s)
     pi = pi / pi.sum()
     values = np.clip(np.round(rng.normal(3.0, 1.0, n_ideas)), 1, 5)
+    valuable = (values >= TAU).astype(int)
     draws = rng.choice(n_ideas, size=N_SAMPLES, replace=True, p=pi)
     samples = pd.DataFrame({
         "sample_id": [f"{name}_{i:04d}" for i in range(N_SAMPLES)],
         "condition": name,
         "idea_id": [f"{name}_idea{j:03d}" for j in draws],
-        "value": values[draws],
+        "valuable": valuable[draws],
     })
     truth = {
         "true_N": int(n_ideas),
-        "true_valuable_N": int((values >= TAU).sum()),
-        "true_valuable_share": float((values >= TAU).mean()),
-        "true_valuable_mass": float(pi[values >= TAU].sum()),
+        "true_valuable_N": int(valuable.sum()),
+        "true_valuable_share": float(valuable.mean()),
+        "true_valuable_mass": float(pi[valuable == 1].sum()),
         "true_top1_mass": float(pi.max()),
         "true_top3_mass": float(np.sort(pi)[::-1][:3].sum()),
         "true_expected_distinct_at_n": float((1 - (1 - pi) ** N_SAMPLES).sum()),
@@ -61,9 +63,10 @@ def main():
     samples = pd.concat(parts, ignore_index=True)
     samples.to_csv(HERE / "example_samples.csv", index=False)
     counts = (samples.groupby(["condition", "idea_id"], as_index=False)
-              .agg(count=("sample_id", "size"), value=("value", "first")))
+              .agg(count=("sample_id", "size"), valuable=("valuable", "first")))
     counts.to_csv(HERE / "example_counts.csv", index=False)
-    (HERE / "example_truth.json").write_text(json.dumps({"tau": TAU, "n_per_condition": N_SAMPLES,
+    (HERE / "example_truth.json").write_text(json.dumps({"latent_score_threshold": TAU,
+                                                         "n_per_condition": N_SAMPLES,
                                                          **truth}, indent=2))
     print(samples.groupby("condition").idea_id.nunique().rename("S_obs"))
     print(json.dumps(truth, indent=2))

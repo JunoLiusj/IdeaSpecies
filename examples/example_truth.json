@@ -1,5 +1,5 @@
 {
-  "tau": 4.0,
+  "latent_score_threshold": 4.0,
   "n_per_condition": 300,
   "broad_flat": {
     "true_N": 80,

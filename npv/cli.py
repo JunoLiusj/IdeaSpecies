@@ -39,9 +39,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--count-col", default="count", help="(counts format) column with x_i")
     p.add_argument("--condition-cols", default="",
                    help="comma-separated columns defining a condition, e.g. model,prompt (empty = single condition)")
-    p.add_argument("--value-col", default=None, help="column with idea value; enables the V block")
-    p.add_argument("--tau", type=float, nargs="*", default=None,
-                   help="value threshold(s) tau for z_i(tau) = 1[value_i >= tau]; required with --value-col")
+    p.add_argument("--valuable-col", default=None,
+                   help="column with the 0/1 (or true/false) gold valuable label of each idea; enables the V block")
     p.add_argument("--top-k", default="1,3,5,10", help="k values for top-k probability mass")
     p.add_argument("--extrapolate-to", type=int, default=None,
                    help="extend the model discovery curve to this many samples (default 2n per condition)")
@@ -88,14 +87,11 @@ def analyse_condition(cd: ConditionData, args, top_k: list[int]) -> tuple[dict, 
         "idea_id": cd.idea_ids, "count": cd.counts, "pi_hat": p_est.pi_hat, "rank": p_est.rank,
         "q_detect": 1.0 - (1.0 - p_est.pi_hat) ** p_est.n,
     })
-    if cd.values is not None:
-        idea_tbl["value"] = cd.values
-        for tau in args.tau:
-            v_est = estimate_V(cd.counts, cd.values, tau)
-            idea_tbl[f"z_tau{tau:g}"] = v_est.z.astype(int)
-            for k, val in v_est.to_dict().items():
-                if k != "tau":
-                    row[f"{k}_tau{tau:g}"] = val
+    if cd.valuable is not None:
+        v_est = estimate_V(cd.counts, cd.valuable)
+        idea_tbl["valuable"] = v_est.z.astype(int)
+        idea_tbl["idw_weight"] = 1.0 / v_est.q          # inverse-detection weight used in r_V
+        row.update(v_est.to_dict())
     idea_tbl = idea_tbl.sort_values("rank").reset_index(drop=True)
 
     if args.n_boot > 0:
@@ -118,10 +114,6 @@ def analyse_condition(cd: ConditionData, args, top_k: list[int]) -> tuple[dict, 
 
 def main(argv: list[str] | None = None) -> Path:
     args = build_parser().parse_args(argv)
-    if args.value_col and not args.tau:
-        raise SystemExit("--tau is required when --value-col is given (no default threshold is assumed)")
-    if args.tau and not args.value_col:
-        raise SystemExit("--tau given without --value-col")
     condition_cols = [c.strip() for c in args.condition_cols.split(",") if c.strip()]
     top_k = [int(k) for k in args.top_k.split(",") if k.strip()]
 
@@ -137,7 +129,7 @@ def main(argv: list[str] | None = None) -> Path:
     log.info("run dir %s", run_dir)
 
     conditions = load_conditions(args.input, args.format, args.idea_col, condition_cols,
-                                 args.value_col, args.count_col)
+                                 args.valuable_col, args.count_col)
     rows, all_curves, all_rank, all_emp = [], {}, {}, {}
     for cd in conditions:
         row, idea_tbl, curves, curve_tbl, emp = analyse_condition(cd, args, top_k)

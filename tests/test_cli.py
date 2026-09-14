@@ -22,7 +22,7 @@ EXPECTED_FILES = [
 @pytest.fixture(scope="module")
 def runs(tmp_path_factory):
     out = tmp_path_factory.mktemp("npv")
-    common = ["--condition-cols", "condition", "--value-col", "value", "--tau", "4",
+    common = ["--condition-cols", "condition", "--valuable-col", "valuable",
               "--n-boot", "20", "--n-perm", "5", "--out-root", str(out)]
     s = main(["--input", str(EXAMPLES / "example_samples.csv"), "--format", "samples",
               "--run-name", "s", *common])
@@ -44,13 +44,13 @@ def test_formats_agree_and_match_truth(runs):
     s, c = runs
     a = pd.read_csv(s / "summary.csv").set_index("condition").sort_index()
     b = pd.read_csv(c / "summary.csv").set_index("condition").sort_index()
-    cols = ["n", "S_obs", "f1", "f2", "N_hat", "coverage", "pi0", "top1_mass", "r_V_tau4", "N_V_tau4", "Q_V_tau4"]
+    cols = ["n", "S_obs", "f1", "f2", "N_hat", "coverage", "pi0", "top1_mass", "r_V", "N_V", "Q_V"]
     pd.testing.assert_frame_equal(a[cols], b[cols])
     truth = json.loads((EXAMPLES / "example_truth.json").read_text())
     for cond in ["broad_flat", "narrow_peaked"]:
         assert a.loc[cond, "n"] == truth["n_per_condition"]
         assert abs(a.loc[cond, "N_hat"] - truth[cond]["true_N"]) <= 3          # Chao1 close to the truth here
-        assert abs(a.loc[cond, "N_V_tau4"] - truth[cond]["true_valuable_N"]) <= 3
+        assert abs(a.loc[cond, "N_V"] - truth[cond]["true_valuable_N"]) <= 3
     assert list(a.sort_values("N_hat").index) == list(pd.read_csv(s / "summary.csv")["condition"])  # worst first
 
 
@@ -63,7 +63,8 @@ def test_idea_table_consistency(runs):
     assert tbl["pi_hat"].sum() == pytest.approx(summ["coverage"])
     assert list(tbl["rank"]) == list(range(1, len(tbl) + 1))
     np.testing.assert_allclose(tbl["q_detect"], 1 - (1 - tbl["pi_hat"]) ** summ["n"])
-    assert tbl["z_tau4"].sum() == summ["S_V_obs_tau4"]
+    assert tbl["valuable"].sum() == summ["S_V_obs"]
+    np.testing.assert_allclose(tbl["idw_weight"], 1 / tbl["q_detect"])
 
 
 def test_refuses_to_overwrite(runs):
@@ -73,7 +74,15 @@ def test_refuses_to_overwrite(runs):
               "--out-root", str(s.parent), "--run-name", "s"])
 
 
-def test_value_col_requires_tau(tmp_path):
-    with pytest.raises(SystemExit, match="--tau is required"):
-        main(["--input", str(EXAMPLES / "example_counts.csv"), "--format", "counts",
-              "--value-col", "value", "--out-root", str(tmp_path)])
+def test_inconsistent_labels_within_idea_are_rejected(tmp_path):
+    df = pd.read_csv(EXAMPLES / "example_samples.csv")
+    first_idea = df["idea_id"].iloc[0]
+    rows = df.index[df["idea_id"] == first_idea]
+    assert len(rows) >= 2
+    df.loc[rows[0], "valuable"] = 1 - df.loc[rows[0], "valuable"]      # flip one sample's label
+    bad = tmp_path / "bad.csv"
+    df.to_csv(bad, index=False)
+    with pytest.raises(ValueError, match="both valuable=1 and valuable=0"):
+        main(["--input", str(bad), "--format", "samples", "--condition-cols", "condition",
+              "--valuable-col", "valuable", "--n-boot", "0", "--n-perm", "0",
+              "--out-root", str(tmp_path / "out")])

@@ -17,12 +17,12 @@ P  (probability landscape, Good-Turing coverage)
     pi_0   = M0 / f0    when f0 > 0    (average scale of the unseen tail)
 Discovery curve
     E[K_n] = sum_i 1 - (1 - pi_i)^n
-V  (value landscape, threshold tau)
-    z_i(tau) = 1[value_i >= tau]
+V  (value landscape, binary valuable label z_i supplied by the RA)
+    z_i      = 1 if idea i is valuable else 0   (gold label, however it was obtained)
     q_i      = 1 - (1 - pi_i)^n        (probability idea i appears at least once)
-    r_V(tau) = sum_obs z_i / q_i  /  sum_obs 1 / q_i
-    N_V(tau) = N_hat r_V(tau)
-    Q_V(tau) = sum_obs z_i pi_i
+    r_V      = sum_obs z_i / q_i  /  sum_obs 1 / q_i
+    N_V      = N_hat r_V
+    Q_V      = sum_obs z_i pi_i
 """
 
 from __future__ import annotations
@@ -188,33 +188,57 @@ def estimate_P(counts, top_k=(1, 3, 5, 10)) -> PEstimate:
 # --------------------------------------------------------------------------- #
 @dataclass
 class VEstimate:
-    tau: float
-    z: np.ndarray               # z_i(tau) per observed idea
+    z: np.ndarray               # valuable label z_i per observed idea (0/1)
     q: np.ndarray               # detection probability q_i per observed idea
     S_V_obs: int                # number of observed valuable ideas
     obs_valuable_share: float   # S_V_obs / S_obs (naive, not detection-weighted)
-    r_V: float
-    N_V: float
-    Q_V: float
-    mean_value_obs: float       # unweighted mean of idea values (observed ideas)
-    mean_value_sample: float    # sample-weighted mean (each generation counts once)
+    r_V: float                  # inverse-detection-weighted valuable share of the whole space
+    N_V: float                  # N_hat * r_V
+    Q_V: float                  # probability mass on observed valuable ideas
+    valuable_sample_share: float  # share of generations that produced a valuable idea
 
     def to_dict(self) -> dict:
         return {
-            "tau": self.tau, "S_V_obs": self.S_V_obs,
-            "obs_valuable_share": self.obs_valuable_share,
+            "S_V_obs": self.S_V_obs, "obs_valuable_share": self.obs_valuable_share,
             "r_V": self.r_V, "N_V": self.N_V, "Q_V": self.Q_V,
-            "mean_value_obs": self.mean_value_obs, "mean_value_sample": self.mean_value_sample,
+            "valuable_sample_share": self.valuable_sample_share,
         }
 
 
-def estimate_V(counts, values, tau: float) -> VEstimate:
+def as_valuable_labels(labels) -> np.ndarray:
+    """Coerce a gold valuable label vector to a 0/1 float array.
+
+    Accepts booleans, the integers 0/1, or the strings true/false, yes/no, 1/0
+    (case-insensitive).  Anything else (2, 0.5, NaN, 'maybe') is an error: the
+    task description's V block needs a binary label per observed idea."""
+    arr = np.asarray(labels)
+    if arr.ndim != 1:
+        raise ValueError(f"valuable labels must be 1-D, got shape {arr.shape}")
+    if arr.dtype == bool:
+        return arr.astype(float)
+    if np.issubdtype(arr.dtype, np.number):
+        if np.any(np.isnan(arr.astype(float))):
+            raise ValueError("valuable labels contain NaN: every observed idea needs a label")
+        if not np.all(np.isin(arr, [0, 1])):
+            bad = np.unique(arr[~np.isin(arr, [0, 1])])[:5]
+            raise ValueError(f"valuable labels must be 0/1, found {bad.tolist()}")
+        return arr.astype(float)
+    mapping = {"1": 1.0, "0": 0.0, "true": 1.0, "false": 0.0, "yes": 1.0, "no": 0.0}
+    out = np.empty(arr.size, dtype=float)
+    for i, s in enumerate(arr):
+        key = str(s).strip().lower()
+        if key not in mapping:
+            raise ValueError(f"valuable label {s!r} is not one of 0/1, true/false, yes/no")
+        out[i] = mapping[key]
+    return out
+
+
+def estimate_V(counts, valuable) -> VEstimate:
+    """V block from a binary gold label per observed idea (no threshold involved)."""
     c = _as_counts(counts)
-    v = np.asarray(values, dtype=float)
-    if v.shape != c.shape:
-        raise ValueError(f"values shape {v.shape} must match counts shape {c.shape}")
-    if np.any(np.isnan(v)):
-        raise ValueError("values contain NaN: every observed idea needs a value for V estimation")
+    z = as_valuable_labels(valuable)
+    if z.shape != c.shape:
+        raise ValueError(f"valuable shape {z.shape} must match counts shape {c.shape}")
     p = estimate_P(c)
     n_est = estimate_N(c)
     q = detection_probability(p.pi_hat, p.n)
@@ -223,13 +247,12 @@ def estimate_V(counts, values, tau: float) -> VEstimate:
             "some q_i = 0 (coverage C = 0, all samples are singletons); "
             "inverse-detection weighting is undefined - collect more samples"
         )
-    z = (v >= tau).astype(float)
     w = 1.0 / q
     r_v = float((z * w).sum() / w.sum())
     return VEstimate(
-        tau=float(tau), z=z, q=q, S_V_obs=int(z.sum()), obs_valuable_share=float(z.mean()),
+        z=z, q=q, S_V_obs=int(z.sum()), obs_valuable_share=float(z.mean()),
         r_V=r_v, N_V=float(n_est.N_hat * r_v), Q_V=float((z * p.pi_hat).sum()),
-        mean_value_obs=float(v.mean()), mean_value_sample=float((v * c).sum() / c.sum()),
+        valuable_sample_share=float((z * c).sum() / c.sum()),
     )
 
 

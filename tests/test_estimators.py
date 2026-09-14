@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from npv import (
-    chao1_bias_corrected, chao1_bootstrap, detection_probability, discovery_curves,
+    as_valuable_labels, chao1_bias_corrected, chao1_bootstrap, detection_probability, discovery_curves,
     empirical_accumulation, estimate_N, estimate_P, estimate_V, expected_distinct,
     frequency_counts, rarefaction_curve, reconstructed_landscape, sample_coverage,
 )
@@ -68,13 +68,11 @@ def test_expected_distinct_and_detection():
 
 
 def test_estimate_V_block_by_hand():
-    values = np.array([5.0, 1.0, 5.0, 1.0, 3.0, 3.0])
-    tau = 3.0
-    v = estimate_V(COUNTS, values, tau)
+    z = np.array([1, 0, 1, 0, 1, 1], dtype=float)            # gold valuable labels per idea
+    v = estimate_V(COUNTS, z)
     C, n = 10 / 13, 13
     pi = C * COUNTS / n
     q = 1 - (1 - pi) ** n
-    z = (values >= tau).astype(float)                        # [1,0,1,0,1,1]
     r_v = (z / q).sum() / (1 / q).sum()
     assert list(v.z) == list(z)
     np.testing.assert_allclose(v.q, q)
@@ -82,21 +80,32 @@ def test_estimate_V_block_by_hand():
     assert v.r_V == pytest.approx(r_v)
     assert v.N_V == pytest.approx(7.5 * r_v)
     assert v.Q_V == pytest.approx((z * pi).sum())
-    assert v.mean_value_obs == pytest.approx(values.mean())
-    assert v.mean_value_sample == pytest.approx((values * COUNTS).sum() / n)
+    assert v.valuable_sample_share == pytest.approx((z * COUNTS).sum() / n)   # (5+1+2+1)/13
     # inverse-detection weighting must up-weight rare (singleton) ideas relative to the naive share:
     # here valuable ideas include two singletons, so r_V > naive share
     assert v.r_V > v.obs_valuable_share
 
 
+def test_valuable_label_coercion():
+    np.testing.assert_array_equal(as_valuable_labels([True, False]), [1.0, 0.0])
+    np.testing.assert_array_equal(as_valuable_labels(np.array([1, 0, 1])), [1.0, 0.0, 1.0])
+    np.testing.assert_array_equal(as_valuable_labels(["yes", "No", " TRUE ", "0"]), [1.0, 0.0, 1.0, 0.0])
+    with pytest.raises(ValueError, match="must be 0/1"):
+        as_valuable_labels(np.array([0, 2, 1]))
+    with pytest.raises(ValueError, match="not one of"):
+        as_valuable_labels(["maybe", "yes"])
+    with pytest.raises(ValueError, match="NaN"):
+        as_valuable_labels(np.array([1.0, np.nan]))
+
+
 def test_estimate_V_rejects_zero_detection():
     with pytest.raises(ValueError, match="q_i = 0"):
-        estimate_V(np.array([1, 1, 1]), np.array([1.0, 2.0, 3.0]), tau=2)   # C = 0
+        estimate_V(np.array([1, 1, 1]), np.array([1, 0, 1]))   # C = 0
 
 
-def test_estimate_V_rejects_nan_values():
-    with pytest.raises(ValueError, match="NaN"):
-        estimate_V(COUNTS, np.array([1, 2, np.nan, 4, 5, 6]), tau=2)
+def test_estimate_V_rejects_shape_mismatch():
+    with pytest.raises(ValueError, match="shape"):
+        estimate_V(COUNTS, np.array([1, 0, 1]))
 
 
 def test_rarefaction_endpoints_and_vs_permutation():

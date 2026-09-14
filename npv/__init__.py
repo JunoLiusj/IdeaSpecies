@@ -12,6 +12,7 @@ from .estimators import (  # noqa: F401
     NEstimate,
     PEstimate,
     VEstimate,
+    as_valuable_labels,
     chao1_bias_corrected,
     chao1_bootstrap,
     detection_probability,
