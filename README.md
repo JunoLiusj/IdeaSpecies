@@ -2,7 +2,7 @@
 
 A small, dependency-light tool that computes every estimator written in the
 **Stage 2 Task for RAs** document ("The N-P-V framework" section) from an idea-level
-or sample-level table. It does *not* identify ideas, embed text, or call any model:
+table. It does *not* identify ideas, embed text, or call any model:
 you bring a table where each independent generation has already been assigned to
 one idea category (and, optionally, each idea carries a binary label saying whether
 it is valuable, obtained however your study defines value).
