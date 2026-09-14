@@ -110,7 +110,7 @@ it also enables the empirical accumulation curve).
 | `count` (`--count-col`) | yes | x_i, number of samples that produced the idea (>= 1) |
 | condition columns | no | as above |
 | `valuable` | no | idea-level FINAL label, `1`/`0` (or `true`/`false`, `yes`/`no`) |
-| `x`, `y` | no | 2-D semantic coordinates of the idea |
+| `x`, `y` | no | 2-D semantic coordinates of the canonical idea of this idea species |
 
 Do **not** include rows with count 0: unobserved ideas are exactly what N estimates.
 Missing values, non-integer counts, duplicate idea rows, or labels other than 0/1
