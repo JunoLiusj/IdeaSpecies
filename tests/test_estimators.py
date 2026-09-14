@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from npv import (
-    as_valuable_labels, chao1_bias_corrected, chao1_bootstrap, detection_probability, discovery_curves,
+    as_valuable_labels, calibrate_labels, chao1_bias_corrected, chao1_bootstrap, detection_probability, discovery_curves,
     empirical_accumulation, estimate_N, estimate_P, estimate_V, expected_distinct,
     frequency_counts, rarefaction_curve, reconstructed_landscape, sample_coverage,
 )
@@ -68,22 +68,77 @@ def test_expected_distinct_and_detection():
 
 
 def test_estimate_V_block_by_hand():
-    z = np.array([1, 0, 1, 0, 1, 1], dtype=float)            # gold valuable labels per idea
+    # counts [5,3,1,1,2,1]; valuable labels z = [1,0,1,0,1,1]; f0_hat = 1.5
+    # singletons are ideas 2,3,5 with z = [1,0,1] -> frac_unseen_singleton = 2/3
+    z = np.array([1, 0, 1, 0, 1, 1], dtype=float)
     v = estimate_V(COUNTS, z)
     C, n = 10 / 13, 13
     pi = C * COUNTS / n
-    q = 1 - (1 - pi) ** n
-    r_v = (z / q).sum() / (1 / q).sum()
-    assert list(v.z) == list(z)
-    np.testing.assert_allclose(v.q, q)
-    assert v.S_V_obs == 4 and v.obs_valuable_share == pytest.approx(4 / 6)
-    assert v.r_V == pytest.approx(r_v)
-    assert v.N_V == pytest.approx(7.5 * r_v)
-    assert v.Q_V == pytest.approx((z * pi).sum())
-    assert v.valuable_sample_share == pytest.approx((z * COUNTS).sum() / n)   # (5+1+2+1)/13
-    # inverse-detection weighting must up-weight rare (singleton) ideas relative to the naive share:
-    # here valuable ideas include two singletons, so r_V > naive share
-    assert v.r_V > v.obs_valuable_share
+    assert list(v.z) == list(z) and list(v.r) == list(z)           # no gold -> r == z
+    assert v.S_V_obs == 4 and v.N_obs_valuable == 4.0
+    assert v.raw_ratio == pytest.approx(4 / 6)
+    assert v.f0_hat == pytest.approx(1.5)
+    assert v.n_singleton_basis == 3
+    assert v.frac_unseen_singleton == pytest.approx(2 / 3)
+    assert v.frac_unseen_observed == pytest.approx(4 / 6)
+    assert v.N_V == pytest.approx(4 + 1.5 * 2 / 3)                # 5.0
+    assert v.N_V_observed_rule == pytest.approx(4 + 1.5 * 4 / 6)
+    assert v.N_V_lower == 4.0 and v.N_V_upper == pytest.approx(5.5)
+    assert v.N_V_lower <= v.N_V <= v.N_V_upper
+    assert v.valuable_fraction == pytest.approx(5.0 / 7.5)
+    assert v.valuable_fraction_lower == pytest.approx(4 / 7.5)
+    assert v.valuable_fraction_upper == pytest.approx(5.5 / 7.5)
+    assert v.Q_V == pytest.approx((z * pi).sum())                  # pi from the FULL sample
+    assert v.P_V == pytest.approx((z * pi).sum() + (3 / 13) * 2 / 3)
+    assert v.valuable_sample_share == pytest.approx((z * COUNTS).sum() / n)   # 9/13
+    within = v.pi_within_valuable
+    assert np.isnan(within[1]) and np.isnan(within[3])
+    assert np.nansum(within) == pytest.approx(v.Q_V / v.P_V)       # observed valuable share of P_V
+    assert any("singleton" in w for w in v.warnings)               # fewer than 10 singletons
+
+
+def test_estimate_V_observed_rule_and_no_singletons():
+    v = estimate_V(COUNTS, [1, 0, 1, 0, 1, 1], unseen_rule="observed")
+    assert v.N_V == pytest.approx(4 + 1.5 * 4 / 6)
+    with pytest.raises(ValueError, match="unseen_rule"):
+        estimate_V(COUNTS, [1, 0, 1, 0, 1, 1], unseen_rule="magic")
+    v0 = estimate_V(np.array([4, 3, 2]), [1, 0, 1])                # f1 = 0 -> f0 = 0
+    assert np.isnan(v0.frac_unseen_singleton)
+    assert v0.N_V == v0.N_V_lower == v0.N_V_upper == 2.0
+    assert v0.P_V == pytest.approx(v0.Q_V)
+
+
+def test_calibration_with_gold_subset_by_hand():
+    # z = [1,0,1,0,1,1]; human labels on ideas 0,1,2,4: gold = [1,0,0,nan,1,nan]
+    # stratum z=1 labelled: ideas 0,2,4 -> gold 1,0,1 -> PPV = 2/3
+    # stratum z=0 labelled: idea 1 -> gold 0 -> NPV = 1
+    # r = gold where labelled, else PPV for z=1 (idea 5), 1-NPV = 0 for z=0 (idea 3)
+    z = [1, 0, 1, 0, 1, 1]
+    gold = [1, 0, 0, np.nan, 1, np.nan]
+    r, calib = calibrate_labels(np.array(z, dtype=float), gold)
+    np.testing.assert_allclose(r, [1, 0, 0, 0, 1, 2 / 3])
+    assert calib["n_gold"] == 4 and calib["n_gold_z1"] == 3 and calib["n_gold_z0"] == 1
+    assert calib["PPV"] == pytest.approx(2 / 3) and calib["NPV"] == 1.0
+    assert calib["agreement"] == pytest.approx(3 / 4)
+    v = estimate_V(COUNTS, z, gold=gold)
+    assert v.N_obs_valuable == pytest.approx(2 + 2 / 3)
+    assert v.frac_unseen_singleton == pytest.approx((0 + 0 + 2 / 3) / 3)   # singletons: ideas 2,3,5
+    assert v.N_V == pytest.approx(2 + 2 / 3 + 1.5 * (2 / 9))                # 3.0
+    assert v.calibration["PPV"] == pytest.approx(2 / 3)
+
+
+def test_calibration_requires_both_strata_and_blank_handling():
+    z = np.array([1, 0, 1, 0, 1, 1], dtype=float)
+    with pytest.raises(ValueError, match="both label strata"):
+        calibrate_labels(z, [1, np.nan, 0, np.nan, 1, np.nan])          # no z=0 idea labelled
+    with pytest.raises(ValueError, match="no labelled"):
+        calibrate_labels(z, [np.nan] * 6)
+    r, calib = calibrate_labels(z, ["1", "", "0", "no", None, ""])      # strings and blanks accepted
+    assert calib["n_gold"] == 3                                          # "", None are unlabelled
+    assert calib["PPV"] == pytest.approx(0.5) and calib["NPV"] == 1.0
+    np.testing.assert_allclose(r, [1, 0, 0, 0, 0.5, 0.5])
+    r2, _ = calibrate_labels(z, np.array([1.0, np.nan, 0.0, 0.0, np.nan, np.nan], dtype=object))
+    np.testing.assert_allclose(r2, [1, 0, 0, 0, 0.5, 0.5])              # float objects accepted
 
 
 def test_valuable_label_coercion():
@@ -96,11 +151,6 @@ def test_valuable_label_coercion():
         as_valuable_labels(["maybe", "yes"])
     with pytest.raises(ValueError, match="NaN"):
         as_valuable_labels(np.array([1.0, np.nan]))
-
-
-def test_estimate_V_rejects_zero_detection():
-    with pytest.raises(ValueError, match="q_i = 0"):
-        estimate_V(np.array([1, 1, 1]), np.array([1, 0, 1]))   # C = 0
 
 
 def test_estimate_V_rejects_shape_mismatch():

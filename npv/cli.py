@@ -40,7 +40,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--condition-cols", default="",
                    help="comma-separated columns defining a condition, e.g. model,prompt (empty = single condition)")
     p.add_argument("--valuable-col", default=None,
-                   help="column with the 0/1 (or true/false) gold valuable label of each idea; enables the V block")
+                   help="column with the 0/1 (or true/false) valuable label of each idea; enables the V block")
+    p.add_argument("--gold-col", default=None,
+                   help="optional column with HUMAN 0/1 labels on a subset of ideas (blank elsewhere); "
+                        "calibrates --valuable-col via PPV/NPV per label stratum")
+    p.add_argument("--unseen-rule", choices=["singleton", "observed"], default="singleton",
+                   help="valuable fraction assumed for unseen ideas: share among singletons (default) "
+                        "or among all observed ideas; both are always reported with the bounds")
     p.add_argument("--top-k", default="1,3,5,10", help="k values for top-k probability mass")
     p.add_argument("--extrapolate-to", type=int, default=None,
                    help="extend the model discovery curve to this many samples (default 2n per condition)")
@@ -88,9 +94,14 @@ def analyse_condition(cd: ConditionData, args, top_k: list[int]) -> tuple[dict, 
         "q_detect": 1.0 - (1.0 - p_est.pi_hat) ** p_est.n,
     })
     if cd.valuable is not None:
-        v_est = estimate_V(cd.counts, cd.valuable)
+        v_est = estimate_V(cd.counts, cd.valuable, gold=cd.gold, unseen_rule=args.unseen_rule)
+        for w in v_est.warnings:
+            log.warning("[%s] %s", cd.label, w)
         idea_tbl["valuable"] = v_est.z.astype(int)
-        idea_tbl["idw_weight"] = 1.0 / v_est.q          # inverse-detection weight used in r_V
+        if cd.gold is not None:
+            idea_tbl["gold"] = cd.gold
+        idea_tbl["r_valuable"] = v_est.r                 # calibrated Pr(valuable); == valuable without gold
+        idea_tbl["pi_within_valuable"] = v_est.pi_within_valuable
         row.update(v_est.to_dict())
     idea_tbl = idea_tbl.sort_values("rank").reset_index(drop=True)
 
@@ -129,7 +140,7 @@ def main(argv: list[str] | None = None) -> Path:
     log.info("run dir %s", run_dir)
 
     conditions = load_conditions(args.input, args.format, args.idea_col, condition_cols,
-                                 args.valuable_col, args.count_col)
+                                 args.valuable_col, args.count_col, gold_col=args.gold_col)
     rows, all_curves, all_rank, all_emp = [], {}, {}, {}
     for cd in conditions:
         row, idea_tbl, curves, curve_tbl, emp = analyse_condition(cd, args, top_k)
@@ -147,6 +158,12 @@ def main(argv: list[str] | None = None) -> Path:
         log.info("[%s] n=%d S_obs=%d f1=%d f2=%d N_hat=%.2f C=%.3f pi0=%s",
                  cd.label, row["n"], row["S_obs"], row["f1"], row["f2"], row["N_hat"], row["coverage"],
                  f"{row['pi0']:.4g}" if row["pi0"] == row["pi0"] else "nan")
+        if "N_V" in row:
+            log.info("[%s] V: S_V_obs=%d N_obs_valuable=%.2f N_V=%.2f [%.2f, %.2f] (%s rule) Q_V=%.3f P_V=%.3f%s",
+                     cd.label, row["S_V_obs"], row["N_obs_valuable"], row["N_V"], row["N_V_lower"],
+                     row["N_V_upper"], row["unseen_rule"], row["Q_V"], row["P_V"],
+                     f" | gold n={row['calib_n_gold']} PPV={row['calib_PPV']:.2f} NPV={row['calib_NPV']:.2f}"
+                     if "calib_n_gold" in row else "")
 
     summary = pd.DataFrame(rows).sort_values("N_hat", ascending=True).reset_index(drop=True)
     summary.to_csv(run_dir / "summary.csv", index=False)
