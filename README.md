@@ -26,7 +26,7 @@ V  value landscape      valuable filter z_i, N_V with bounds, valuable mass Q_V 
 ## 1. Install and run (uv)
 
 ```bash
-cd ra_npv_toolkit
+git clone https://github.com/JunoLiusj/IdeaSpecies && cd IdeaSpecies
 uv sync                                  # creates .venv with numpy / pandas / matplotlib
 uv run pytest -q                         # 14 hand-checked tests should pass
 
