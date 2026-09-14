@@ -1,0 +1,29 @@
+[project]
+name = "ra-npv-toolkit"
+version = "0.1.0"
+description = "RA estimation toolkit for the N-P-V (richness / probability / value) framework: Chao1, Good-Turing coverage, inverse-detection value weighting"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "matplotlib>=3.10.9",
+    "numpy>=2.2.6",
+    "pandas>=2.3.3",
+]
+
+[project.scripts]
+npv-estimate = "npv.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["npv"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

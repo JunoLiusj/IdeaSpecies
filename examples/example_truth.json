@@ -1,0 +1,22 @@
+{
+  "tau": 4.0,
+  "n_per_condition": 300,
+  "broad_flat": {
+    "true_N": 80,
+    "true_valuable_N": 29,
+    "true_valuable_share": 0.3625,
+    "true_valuable_mass": 0.34894082506916885,
+    "true_top1_mass": 0.03341748222141265,
+    "true_top3_mass": 0.08459553717036003,
+    "true_expected_distinct_at_n": 77.22505009310271
+  },
+  "narrow_peaked": {
+    "true_N": 40,
+    "true_valuable_N": 14,
+    "true_valuable_share": 0.35,
+    "true_valuable_mass": 0.4598092800274135,
+    "true_top1_mass": 0.311852077509933,
+    "true_top3_mass": 0.5310391196267678,
+    "true_expected_distinct_at_n": 35.45888180259757
+  }
+}
