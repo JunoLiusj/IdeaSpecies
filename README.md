@@ -161,22 +161,17 @@ singleton fraction for the share among all observed ideas; both are always in th
 The tool does not calibrate labels. Whatever produces `valuable` (blinded human ratings
 with a preregistered threshold, an LLM judge, an existing evaluator), you are expected to:
 
-1. **Label a human gold subset.** Draw a random subset of *ideas* (not samples) before
+1. **Label a human subset.** Draw a random subset of *ideas* (not samples) before
    looking at results, have blinded humans label it with the same rubric, and freeze it.
-   Sampling within each automatic-label stratum (some ideas the judge called 1, some 0)
-   is fine and usually more informative than a plain random draw; a hand-picked subset
-   is not acceptable.
-2. **Measure disagreement.** On the gold subset compute at least the agreement rate and
-   the judge's precision per stratum, e.g. `PPV = Pr(human = 1 | auto = 1)` and
-   `NPV = Pr(human = 0 | auto = 0)`, and inspect *systematic* disagreement (verbosity,
-   polish, conventionality, ideas resembling the judge's own style).
-3. **Decide and document a correction.** Options, from simplest to most involved:
-   replace the automatic label by the human label wherever a human looked; flip labels
-   in a stratum whose precision is unacceptable; recompute an observed valuable count as
-   `PPV * n_auto_1 + (1 - NPV) * n_auto_0` and a corrected singleton fraction the same
-   way; or fit a calibration model. Preregister the choice if you can, and state the size
-   of the gold subset with every corrected number - with few human labels the PPV / NPV
-   are themselves noisy.
+   A hand-picked subset is not acceptable.
+2. **Correct the automatic label against the human labels**, in a way you decide and
+   document (replace the automatic label wherever a human looked, adjust the labels or
+   the counts by what the human subset shows, fit a calibration model, ...). Preregister
+   the choice if you can.
+3. **Report how reliable the corrected label is**, following the same reliability
+   reporting you used at the Stage 1 checkpoint (the human-labelled subset, its size, the
+   agreement between the automatic and the human labels, and where they systematically
+   disagree). Show the uncorrected and the corrected results side by side.
 4. **Feed the corrected 0/1 label back** into `--valuable-col` and rerun. If your
    correction yields corrected *counts* rather than per-idea labels, plug them into the
    same formulas by hand using `summary.csv` (`f0_hat`, `S_obs`, `N_hat`, `M0`):
@@ -188,9 +183,6 @@ with a preregistered threshold, an LLM judge, an existing evaluator), you are ex
 
    and keep `pi_i` untouched: the correction changes which ideas count as valuable,
    never their generation probability.
-
-Report the uncorrected and the corrected results side by side, together with the gold
-subset size and the disagreement statistics from step 2.
 
 Extras that are *not* in the task description but help reporting:
 
